@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk git *)",
+      "Bash(go mod *)",
+      "Bash(go get *)",
+      "Bash(rtk go *)"
+    ]
+  }
+}
