@@ -150,38 +150,33 @@ func (m model) View() string {
 		fmt.Sprintf(" [%s]  %s", formatDuration(m.elapsed), stateLabel),
 	)
 
-	// Build subtitle box contents
-	innerW := max(w-6, 10)
+	var mainArea, nextLine string
 
-	curIdx := activeSubtitleIdx(m.subs, m.elapsed)
-	cur2Idx := activeSubtitleIdx(m.subs2, m.elapsed)
-
-	var boxContent string
-	if curIdx >= 0 && cur2Idx >= 0 {
-		boxContent = m.subs[curIdx].Text + "\n\n" + sub2Style.Render(m.sub2Text(cur2Idx))
-	} else if curIdx >= 0 {
-		boxContent = m.subs[curIdx].Text
-	} else if cur2Idx >= 0 {
-		boxContent = sub2Style.Render(m.sub2Text(cur2Idx))
+	if len(m.subs2) > 0 {
+		mainArea = m.renderDualColumns(w)
 	} else {
-		boxContent = " "
-	}
+		innerW := max(w-6, 10)
+		curIdx := activeSubtitleIdx(m.subs, m.elapsed)
+		var boxContent string
+		if curIdx >= 0 {
+			boxContent = m.subs[curIdx].Text
+		} else {
+			boxContent = " "
+		}
+		mainArea = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			Width(innerW).
+			Padding(1, 2).
+			Align(lipgloss.Center).
+			Render(boxContent)
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Width(innerW).
-		Padding(1, 2).
-		Align(lipgloss.Center).
-		Render(boxContent)
-
-	// Next line (primary track only)
-	nextLine := ""
-	nextIdx := nextSubtitleIdx(m.subs, m.elapsed)
-	if nextIdx >= 0 {
-		next := firstLine(m.subs[nextIdx].Text)
-		nextLine = lipgloss.NewStyle().Faint(true).Render(
-			fmt.Sprintf(" next › %s", truncateLine(next, w-12)),
-		)
+		nextIdx := nextSubtitleIdx(m.subs, m.elapsed)
+		if nextIdx >= 0 {
+			next := firstLine(m.subs[nextIdx].Text)
+			nextLine = lipgloss.NewStyle().Faint(true).Render(
+				fmt.Sprintf(" next › %s", truncateLine(next, w-12)),
+			)
+		}
 	}
 
 	var bottomLine string
@@ -199,16 +194,123 @@ func (m model) View() string {
 		bottomLine = lipgloss.NewStyle().Faint(true).Render(help)
 	}
 
-	return strings.Join([]string{
-		"",
-		statusLine,
-		"",
-		box,
-		"",
-		nextLine,
-		"",
-		bottomLine,
-	}, "\n")
+	parts := []string{"", statusLine, "", mainArea, ""}
+	if nextLine != "" {
+		parts = append(parts, nextLine, "")
+	}
+	parts = append(parts, bottomLine)
+	return strings.Join(parts, "\n")
+}
+
+// subContext returns 2n+1 subtitle indices centred on the active (or most
+// recently ended) subtitle. Slot n is current; 0..n-1 are previous (oldest
+// first); n+1..2n are next. -1 means no subtitle for that slot.
+func subContext(subs []Subtitle, elapsed time.Duration, n int) []int {
+	result := make([]int, 2*n+1)
+	for i := range result {
+		result[i] = -1
+	}
+	if len(subs) == 0 {
+		return result
+	}
+	cur := activeSubtitleIdx(subs, elapsed)
+	if cur >= 0 {
+		result[n] = cur
+		for i := 1; i <= n; i++ {
+			if cur-i >= 0 {
+				result[n-i] = cur - i
+			}
+			if cur+i < len(subs) {
+				result[n+i] = cur + i
+			}
+		}
+		return result
+	}
+	// In a gap: anchor on the most recently ended subtitle.
+	anchor := -1
+	for i, s := range subs {
+		if s.End <= elapsed {
+			anchor = i
+		}
+	}
+	if anchor >= 0 {
+		// Prev slots: anchor is the newest past entry (slot n-1).
+		for i := 0; i < n; i++ {
+			if anchor-i >= 0 {
+				result[n-1-i] = anchor - i
+			}
+		}
+		for i := 1; i <= n; i++ {
+			if anchor+i < len(subs) {
+				result[n+i] = anchor + i
+			}
+		}
+	} else {
+		// Before any subtitle: show the first n as upcoming.
+		for i := 0; i < n && i < len(subs); i++ {
+			result[n+1+i] = i
+		}
+	}
+	return result
+}
+
+func (m model) renderDualColumns(w int) string {
+	const ctxN = 3
+	colW := max((w-3)/2, 10)
+
+	ctx1 := subContext(m.subs, m.elapsed, ctxN)
+	ctx2 := subContext(m.subs2, m.elapsed, ctxN)
+
+	var leftParts, rightParts []string
+
+	for i, idx := range ctx1 {
+		isCur := i == ctxN
+		if idx < 0 {
+			leftParts = append(leftParts, "")
+			continue
+		}
+		if isCur {
+			leftParts = append(leftParts, m.subs[idx].Text)
+		} else {
+			t := truncateLine(firstLine(m.subs[idx].Text), colW)
+			leftParts = append(leftParts, lipgloss.NewStyle().Faint(true).Render(t))
+		}
+	}
+
+	for i, idx := range ctx2 {
+		isCur := i == ctxN
+		isPast := i < ctxN
+		if idx < 0 {
+			rightParts = append(rightParts, "")
+			continue
+		}
+		if isCur {
+			rightParts = append(rightParts, sub2Style.Render(m.sub2Text(idx)))
+		} else if isPast {
+			t := truncateLine(firstLine(m.subs2[idx].Text), colW)
+			rightParts = append(rightParts, lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("220")).Render(t))
+		} else {
+			// future: follow obscure rules
+			t := firstLine(m.subs2[idx].Text)
+			if m.obscureMode && !m.revealed[idx] {
+				t = obscureText(t)
+			}
+			t = truncateLine(t, colW)
+			rightParts = append(rightParts, lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("220")).Render(t))
+		}
+	}
+
+	leftBlock := lipgloss.NewStyle().Width(colW).Render(strings.Join(leftParts, "\n"))
+	rightBlock := lipgloss.NewStyle().Width(colW).Render(strings.Join(rightParts, "\n"))
+
+	nLines := max(strings.Count(leftBlock, "\n"), strings.Count(rightBlock, "\n")) + 1
+	var divLines []string
+	for range nLines {
+		divLines = append(divLines, " │ ")
+	}
+	divider := strings.Join(divLines, "\n")
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftBlock, divider, rightBlock)
 }
 
 // sub2Text returns the text for subs2[idx], obscured if needed.
