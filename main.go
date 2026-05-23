@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,17 +18,18 @@ var sub2Style = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // amber y
 type tickMsg time.Time
 
 type model struct {
-	subs         []Subtitle
-	subs2        []Subtitle // optional second language track
-	elapsed      time.Duration
-	playing      bool
-	lastTick     time.Time
-	jumpMode     bool
-	jumpBuf      string
-	width        int
-	height       int
-	obscureMode  bool        // when true, subs2 text is hidden by default
-	revealed     map[int]bool // subs2 indices revealed while obscureMode is on
+	subs        []Subtitle
+	subs2       []Subtitle // optional second language track
+	elapsed     time.Duration
+	playing     bool
+	lastTick    time.Time
+	jumpMode    bool
+	jumpBuf     string
+	width       int
+	height      int
+	obscureMode bool         // when true, subs2 text is hidden by default
+	revealed    map[int]bool // subs2 indices revealed while obscureMode is on
+	mdPath      string       // output markdown file path (derived from first SRT)
 }
 
 func (m model) Init() tea.Cmd {
@@ -119,6 +121,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.revealed = make(map[int]bool)
 			}
 
+		case "s":
+			saveCurrent(m)
+
 		case "t":
 			m.jumpMode = true
 			m.jumpBuf = ""
@@ -183,7 +188,7 @@ func (m model) View() string {
 	if m.jumpMode {
 		bottomLine = fmt.Sprintf(" jump to: %s█", m.jumpBuf)
 	} else {
-		help := " space play/pause  ←→/n/p prev/next  t jump  q quit"
+		help := " space play/pause  ←→/n/p prev/next  t jump  s save  q quit"
 		if len(m.subs2) > 0 {
 			if m.obscureMode {
 				help += "  r reveal  R show-all"
@@ -225,6 +230,37 @@ func obscureText(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func saveCurrent(m model) {
+	curIdx := activeSubtitleIdx(m.subs, m.elapsed)
+	cur2Idx := activeSubtitleIdx(m.subs2, m.elapsed)
+	if curIdx < 0 && cur2Idx < 0 {
+		return
+	}
+
+	var lines []string
+	if curIdx >= 0 {
+		for i, line := range strings.Split(strings.TrimSpace(m.subs[curIdx].Text), "\n") {
+			if i == 0 {
+				lines = append(lines, "- "+line)
+			} else {
+				lines = append(lines, "  "+line)
+			}
+		}
+	}
+	if cur2Idx >= 0 {
+		for _, line := range strings.Split(strings.TrimSpace(m.subs2[cur2Idx].Text), "\n") {
+			lines = append(lines, "  - "+line)
+		}
+	}
+
+	f, err := os.OpenFile(m.mdPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(strings.Join(lines, "\n") + "\n")
 }
 
 func doTick() tea.Cmd {
@@ -347,11 +383,16 @@ func main() {
 		}
 	}
 
+	sub1Path := flag.Arg(0)
+	ext := filepath.Ext(sub1Path)
+	mdPath := sub1Path[:len(sub1Path)-len(ext)] + ".md"
+
 	m := model{
 		subs:        subs,
 		subs2:       subs2,
 		obscureMode: len(subs2) > 0,
 		revealed:    make(map[int]bool),
+		mdPath:      mdPath,
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
