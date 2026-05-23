@@ -150,33 +150,12 @@ func (m model) View() string {
 		fmt.Sprintf(" [%s]  %s", formatDuration(m.elapsed), stateLabel),
 	)
 
-	var mainArea, nextLine string
+	var mainArea string
 
 	if len(m.subs2) > 0 {
 		mainArea = m.renderDualColumns(w)
 	} else {
-		innerW := max(w-6, 10)
-		curIdx := activeSubtitleIdx(m.subs, m.elapsed)
-		var boxContent string
-		if curIdx >= 0 {
-			boxContent = m.subs[curIdx].Text
-		} else {
-			boxContent = " "
-		}
-		mainArea = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			Width(innerW).
-			Padding(1, 2).
-			Align(lipgloss.Center).
-			Render(boxContent)
-
-		nextIdx := nextSubtitleIdx(m.subs, m.elapsed)
-		if nextIdx >= 0 {
-			next := firstLine(m.subs[nextIdx].Text)
-			nextLine = lipgloss.NewStyle().Faint(true).Render(
-				fmt.Sprintf(" next › %s", truncateLine(next, w-12)),
-			)
-		}
+		mainArea = m.renderSingleColumn(w)
 	}
 
 	var bottomLine string
@@ -194,12 +173,7 @@ func (m model) View() string {
 		bottomLine = lipgloss.NewStyle().Faint(true).Render(help)
 	}
 
-	parts := []string{"", statusLine, "", mainArea, ""}
-	if nextLine != "" {
-		parts = append(parts, nextLine, "")
-	}
-	parts = append(parts, bottomLine)
-	return strings.Join(parts, "\n")
+	return strings.Join([]string{"", statusLine, "", mainArea, "", bottomLine}, "\n")
 }
 
 // subContext returns 2n+1 subtitle indices centred on the active (or most
@@ -252,6 +226,29 @@ func subContext(subs []Subtitle, elapsed time.Duration, n int) []int {
 		}
 	}
 	return result
+}
+
+func (m model) renderSingleColumn(w int) string {
+	const ctxN = 3
+	colW := max(w-4, 10)
+	ctx := subContext(m.subs, m.elapsed, ctxN)
+
+	var parts []string
+	for i, idx := range ctx {
+		isCur := i == ctxN
+		if idx < 0 {
+			parts = append(parts, "")
+			continue
+		}
+		if isCur {
+			parts = append(parts, m.subs[idx].Text)
+		} else {
+			t := truncateLine(firstLine(m.subs[idx].Text), colW)
+			parts = append(parts, lipgloss.NewStyle().Faint(true).Render(t))
+		}
+	}
+
+	return lipgloss.NewStyle().Width(colW).Align(lipgloss.Center).Render(strings.Join(parts, "\n"))
 }
 
 func (m model) renderDualColumns(w int) string {
